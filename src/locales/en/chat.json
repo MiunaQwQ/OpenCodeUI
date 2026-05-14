@@ -164,7 +164,7 @@
     "retrying": "Retrying",
     "working": "Working",
     "attempt": "attempt {{count}}",
-    "activeBelow": "Child session active"
+    "activeBelow": "Active below"
   },
   "notification": {
     "completed": "Completed",
