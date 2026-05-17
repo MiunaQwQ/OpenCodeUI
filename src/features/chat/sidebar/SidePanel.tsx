@@ -302,7 +302,7 @@ export function SidePanel({
 
   const getChildSessionInfo = useCallback(
     (sessionId: string) => {
-      childSessionVersion
+      void childSessionVersion
       return childSessionStore.getSessionInfo(sessionId)
     },
     [childSessionVersion],
