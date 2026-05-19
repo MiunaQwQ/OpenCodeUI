@@ -200,7 +200,11 @@
     "folderStyleRecentsShowDiff": "Show Diff In Folder View",
     "folderStyleRecentsShowDiffDesc": "Show additions, deletions, and file counts for sessions in folder-style recents",
     "showChildSessions": "Always Show Child Sessions",
-    "showChildSessionsDesc": "Always list child sessions under their parent. When off, only active or selected children are shown."
+    "showChildSessionsDesc": "Always list child sessions under their parent. When off, only active or selected children are shown.",
+    "subSessionSort": "Sub-session sort",
+    "subSessionSortDesc": "Control whether child sessions in Recents are shown oldest-first or newest-first.",
+    "subSessionSortCreatedAsc": "Created time ascending",
+    "subSessionSortCreatedDesc": "Created time descending"
   },
   "workspace": {
     "layout": "Layout & Reading",
