@@ -2,12 +2,13 @@
 // fetchAll=true → /children 拉全量，children 有值 → 直接渲染
 // 删除/重命名自己管自己的状态，和主列表行为完全一致
 
-import { useState, useEffect, useCallback } from 'react'
+import { useState, useEffect, useCallback, useMemo } from 'react'
 import { useTranslation } from 'react-i18next'
 import { getSessionChildren, updateSession, deleteSession as apiDeleteSession, type ApiSession } from '../../../api'
 import { SpinnerIcon } from '../../../components/Icons'
 import { ConfirmDialog } from '../../../components/ui/ConfirmDialog'
 import { useInputCapabilities } from '../../../hooks/useInputCapabilities'
+import { useLayoutStore } from '../../../store'
 import { uiErrorHandler } from '../../../utils'
 import { SessionListItem } from '../../sessions'
 
@@ -38,6 +39,7 @@ export function SessionChildrenSlot({
 }: SessionChildrenSlotProps) {
   const { t } = useTranslation(['chat', 'common'])
   const { preferTouchUi } = useInputCapabilities()
+  const { sidebarSubSessionSortOrder } = useLayoutStore()
   const [fetched, setFetched] = useState<ApiSession[]>([])
   const [loading, setLoading] = useState(false)
   const [deleteConfirm, setDeleteConfirm] = useState<{ isOpen: boolean; sessionId: string | null }>({
@@ -92,7 +94,21 @@ export function SessionChildrenSlot({
     }
   }, [deleteConfirm.sessionId, selectedSessionId, onDeleteSelected])
 
-  const list = fetchAll ? fetched : givenChildren
+  const list = useMemo(() => {
+    const source = fetchAll ? fetched : givenChildren
+    if (!source) return source
+
+    return [...source].sort((left, right) => {
+      const leftCreated = left.time.created
+      const rightCreated = right.time.created
+
+      if (sidebarSubSessionSortOrder === 'createdDesc') {
+        return rightCreated - leftCreated
+      }
+
+      return leftCreated - rightCreated
+    })
+  }, [fetchAll, fetched, givenChildren, sidebarSubSessionSortOrder])
 
   if (!list?.length && !loading) return null
 
