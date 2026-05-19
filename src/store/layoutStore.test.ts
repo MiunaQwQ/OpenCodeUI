@@ -164,18 +164,18 @@ describe('LayoutStore panel and terminal layout', () => {
   it('defaults sub-session sort order to ascending', () => {
     const store = new LayoutStore()
 
-    expect(store.getState().sidebarSubSessionSortOrder).toBe('createdAsc')
+    expect(store.getState().sidebarSubSessionSortOrder).toBe('activeAsc')
   })
 
   it('persists and restores sub-session sort order', () => {
     const store = new LayoutStore()
 
-    store.setSidebarSubSessionSortOrder('createdDesc')
+    store.setSidebarSubSessionSortOrder('activeDesc')
 
-    expect(localStorage.getItem(STORAGE_KEY_SIDEBAR_SUB_SESSION_SORT_ORDER)).toBe('createdDesc')
+    expect(localStorage.getItem(STORAGE_KEY_SIDEBAR_SUB_SESSION_SORT_ORDER)).toBe('activeDesc')
 
     const restored = new LayoutStore().getState()
-    expect(restored.sidebarSubSessionSortOrder).toBe('createdDesc')
+    expect(restored.sidebarSubSessionSortOrder).toBe('activeDesc')
   })
 
   it('falls back to ascending when persisted sub-session sort order is invalid', () => {
@@ -183,23 +183,31 @@ describe('LayoutStore panel and terminal layout', () => {
 
     const store = new LayoutStore()
 
-    expect(store.getState().sidebarSubSessionSortOrder).toBe('createdAsc')
+    expect(store.getState().sidebarSubSessionSortOrder).toBe('activeAsc')
   })
 
   it('includes sub-session sort order in layout backup export and import', () => {
-    layoutStore.setSidebarSubSessionSortOrder('createdDesc')
+    layoutStore.setSidebarSubSessionSortOrder('activeDesc')
 
     const backup = exportLayoutBackup()
 
-    expect(backup.sidebarSubSessionSortOrder).toBe('createdDesc')
+    expect(backup.sidebarSubSessionSortOrder).toBe('activeDesc')
 
     localStorage.clear()
     importLayoutBackup(backup)
 
-    expect(localStorage.getItem(STORAGE_KEY_SIDEBAR_SUB_SESSION_SORT_ORDER)).toBe('createdDesc')
+    expect(localStorage.getItem(STORAGE_KEY_SIDEBAR_SUB_SESSION_SORT_ORDER)).toBe('activeDesc')
 
     const restored = new LayoutStore().getState()
-    expect(restored.sidebarSubSessionSortOrder).toBe('createdDesc')
+    expect(restored.sidebarSubSessionSortOrder).toBe('activeDesc')
+  })
+
+  it('maps legacy created-time sort values to active-time values when restoring persisted state', () => {
+    localStorage.setItem(STORAGE_KEY_SIDEBAR_SUB_SESSION_SORT_ORDER, 'createdDesc')
+
+    const store = new LayoutStore()
+
+    expect(store.getState().sidebarSubSessionSortOrder).toBe('activeDesc')
   })
 
   it('keeps old layout backups without sub-session sort order compatible', () => {
@@ -231,9 +239,9 @@ describe('LayoutStore panel and terminal layout', () => {
       sidebarWidth: null,
     })
 
-    expect(localStorage.getItem(STORAGE_KEY_SIDEBAR_SUB_SESSION_SORT_ORDER)).toBe('createdAsc')
+    expect(localStorage.getItem(STORAGE_KEY_SIDEBAR_SUB_SESSION_SORT_ORDER)).toBe('activeAsc')
 
     const restored = new LayoutStore().getState()
-    expect(restored.sidebarSubSessionSortOrder).toBe('createdAsc')
+    expect(restored.sidebarSubSessionSortOrder).toBe('activeAsc')
   })
 })

@@ -8,7 +8,7 @@ export type PanelPosition = 'bottom' | 'right'
 // 面板内容类型
 export type PanelTabType = 'terminal' | 'files' | 'changes' | 'mcp' | 'skill' | 'worktree'
 type PersistedPanelTabType = Exclude<PanelTabType, 'terminal'>
-export type SidebarSubSessionSortOrder = 'createdAsc' | 'createdDesc'
+export type SidebarSubSessionSortOrder = 'activeAsc' | 'activeDesc'
 
 // 统一的面板标签
 export interface PanelTab {
@@ -167,7 +167,7 @@ export interface PersistedTerminalLayoutMap {
 
 const PANEL_POSITIONS: PanelPosition[] = ['bottom', 'right']
 const PERSISTED_PANEL_TAB_TYPES: PersistedPanelTabType[] = ['files', 'changes', 'mcp', 'skill', 'worktree']
-const SIDEBAR_SUB_SESSION_SORT_ORDERS: SidebarSubSessionSortOrder[] = ['createdAsc', 'createdDesc']
+const SIDEBAR_SUB_SESSION_SORT_ORDERS: SidebarSubSessionSortOrder[] = ['activeAsc', 'activeDesc']
 
 function isPanelPosition(value: unknown): value is PanelPosition {
   return typeof value === 'string' && PANEL_POSITIONS.includes(value as PanelPosition)
@@ -185,7 +185,9 @@ function isSidebarSubSessionSortOrder(value: unknown): value is SidebarSubSessio
 }
 
 function parseSidebarSubSessionSortOrder(value: unknown): SidebarSubSessionSortOrder {
-  return isSidebarSubSessionSortOrder(value) ? value : 'createdAsc'
+  if (value === 'createdAsc') return 'activeAsc'
+  if (value === 'createdDesc') return 'activeDesc'
+  return isSidebarSubSessionSortOrder(value) ? value : 'activeAsc'
 }
 
 function normalizePersistedPanelTab(tab: PersistedPanelTab): PanelTab {
@@ -320,7 +322,7 @@ export class LayoutStore {
     sidebarFolderRecents: false,
     sidebarFolderRecentsShowDiff: true,
     sidebarShowChildSessions: false,
-    sidebarSubSessionSortOrder: 'createdAsc',
+    sidebarSubSessionSortOrder: 'activeAsc',
     rightPanelOpen: false,
     rightPanelWidth: 450,
     bottomPanelOpen: false,
