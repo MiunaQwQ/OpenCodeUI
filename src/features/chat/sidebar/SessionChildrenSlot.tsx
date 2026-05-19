@@ -4,11 +4,13 @@
 
 import { useState, useEffect, useCallback, useMemo } from 'react'
 import { useTranslation } from 'react-i18next'
+import { MS_PER_MINUTE } from '../../../constants'
 import { getSessionChildren, updateSession, deleteSession as apiDeleteSession, type ApiSession } from '../../../api'
 import { SpinnerIcon } from '../../../components/Icons'
 import { ConfirmDialog } from '../../../components/ui/ConfirmDialog'
 import { useInputCapabilities } from '../../../hooks/useInputCapabilities'
-import { useLayoutStore } from '../../../store'
+import { useNow } from '../../../hooks/useNow'
+import { useBusySessions, useLayoutStore } from '../../../store'
 import { uiErrorHandler } from '../../../utils'
 import { SessionListItem } from '../../sessions'
 
@@ -40,6 +42,8 @@ export function SessionChildrenSlot({
   const { t } = useTranslation(['chat', 'common'])
   const { preferTouchUi } = useInputCapabilities()
   const { sidebarSubSessionSortOrder } = useLayoutStore()
+  const busySessions = useBusySessions()
+  const now = useNow(MS_PER_MINUTE)
   const [fetched, setFetched] = useState<ApiSession[]>([])
   const [loading, setLoading] = useState(false)
   const [deleteConfirm, setDeleteConfirm] = useState<{ isOpen: boolean; sessionId: string | null }>({
@@ -97,18 +101,31 @@ export function SessionChildrenSlot({
   const list = useMemo(() => {
     const source = fetchAll ? fetched : givenChildren
     if (!source) return source
+    const busySessionIds = new Set(busySessions.map(entry => entry.sessionId))
 
     return [...source].sort((left, right) => {
-      const leftCreated = left.time.created
-      const rightCreated = right.time.created
+      const leftActive = left.time.updated ?? left.time.created
+      const rightActive = right.time.updated ?? right.time.created
+      const leftIsJustNow = now - leftActive < MS_PER_MINUTE
+      const rightIsJustNow = now - rightActive < MS_PER_MINUTE
+      const leftIsBusy = busySessionIds.has(left.id)
+      const rightIsBusy = busySessionIds.has(right.id)
 
-      if (sidebarSubSessionSortOrder === 'createdDesc') {
-        return rightCreated - leftCreated
+      if (leftIsJustNow && rightIsJustNow) {
+        if (leftIsBusy !== rightIsBusy) {
+          return leftIsBusy ? -1 : 1
+        }
+
+        return 0
       }
 
-      return leftCreated - rightCreated
+      if (sidebarSubSessionSortOrder === 'activeDesc') {
+        return rightActive - leftActive
+      }
+
+      return leftActive - rightActive
     })
-  }, [fetchAll, fetched, givenChildren, sidebarSubSessionSortOrder])
+  }, [busySessions, fetchAll, fetched, givenChildren, now, sidebarSubSessionSortOrder])
 
   if (!list?.length && !loading) return null
 
