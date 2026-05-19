@@ -4,12 +4,33 @@
 // ============================================
 
 use crate::app::service::ServiceState;
+use reqwest::StatusCode;
 use std::{
+    collections::HashMap,
+    future::Future,
+    pin::Pin,
     process::{Command, Stdio},
     sync::atomic::Ordering,
     time::Duration,
 };
 use tauri::State;
+
+type HealthCheckFuture = Pin<Box<dyn Future<Output = bool> + Send>>;
+type HealthCheckFn = dyn Fn() -> HealthCheckFuture + Send + Sync;
+type SpawnFn = dyn Fn(&str, &HashMap<String, String>) -> Result<u32, String> + Send + Sync;
+
+const START_READINESS_ATTEMPTS: usize = 30;
+const START_READINESS_DELAY: Duration = Duration::from_millis(500);
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum CloseServiceAction {
+    Stop { pid: Option<u32> },
+    KeepRunning,
+}
+
+fn is_running_health_status(status: StatusCode) -> bool {
+    status.is_success() || status == StatusCode::UNAUTHORIZED
+}
 
 /// 检查 opencode 服务是否在运行（通过 health endpoint）
 pub async fn is_service_running(url: &str) -> bool {
@@ -23,7 +44,7 @@ pub async fn is_service_running(url: &str) -> bool {
             .timeout(Duration::from_secs(5))
             .send()
             .await
-            .map(|r| r.status().is_success())
+            .map(|r| is_running_health_status(r.status()))
             .unwrap_or(false),
         Err(_) => false,
     }
@@ -32,7 +53,7 @@ pub async fn is_service_running(url: &str) -> bool {
 /// 启动 opencode serve 进程
 fn spawn_opencode_serve(
     binary_path: &str,
-    env_vars: &std::collections::HashMap<String, String>,
+    env_vars: &HashMap<String, String>,
 ) -> Result<std::process::Child, String> {
     log::info!("Starting opencode serve with binary: {}", binary_path);
     if !env_vars.is_empty() {
@@ -60,6 +81,84 @@ fn spawn_opencode_serve(
             binary_path, e
         )
     })
+}
+
+async fn wait_for_service(
+    health_check: &HealthCheckFn,
+    readiness_attempts: usize,
+    readiness_delay: Duration,
+) -> bool {
+    for _ in 0..readiness_attempts {
+        tokio::time::sleep(readiness_delay).await;
+        if health_check().await {
+            return true;
+        }
+    }
+
+    false
+}
+
+async fn start_opencode_service_inner(
+    state: &ServiceState,
+    url: &str,
+    binary_path: &str,
+    env_vars: &HashMap<String, String>,
+    health_check: &HealthCheckFn,
+    spawn: &SpawnFn,
+    readiness_attempts: usize,
+    readiness_delay: Duration,
+) -> Result<bool, String> {
+    let mut process = state.process.lock().await;
+    let owned_pid = process.child_pid;
+    let healthy = health_check().await;
+
+    if healthy {
+        if let Some(pid) = owned_pid {
+            log::info!(
+                "opencode service already running at {} with app-owned PID {}",
+                url,
+                pid
+            );
+            state.we_started.store(true, Ordering::SeqCst);
+        } else {
+            log::info!("opencode service already running externally at {}", url);
+            state.we_started.store(false, Ordering::SeqCst);
+        }
+
+        return Ok(false);
+    }
+
+    if let Some(pid) = owned_pid {
+        log::info!(
+            "opencode service already started by app with PID {} but health is not ready yet",
+            pid
+        );
+        state.we_started.store(true, Ordering::SeqCst);
+
+        if wait_for_service(health_check, readiness_attempts, readiness_delay).await {
+            log::info!("opencode service is ready at {}", url);
+        } else {
+            log::warn!(
+                "opencode service still not healthy for existing app-owned PID {}",
+                pid
+            );
+        }
+
+        return Ok(false);
+    }
+
+    let pid = spawn(binary_path, env_vars)?;
+    process.child_pid = Some(pid);
+    state.we_started.store(true, Ordering::SeqCst);
+    log::info!("Started opencode serve, PID: {}", pid);
+
+    if wait_for_service(health_check, readiness_attempts, readiness_delay).await {
+        log::info!("opencode service is ready at {}", url);
+    } else {
+        log::warn!("opencode service started but health check not passing yet");
+    }
+
+    Ok(true)
 }
 
 /// 跨平台杀进程
@@ -98,39 +197,47 @@ pub async fn start_opencode_service(
     state: State<'_, ServiceState>,
     url: String,
     binary_path: String,
-    env_vars: std::collections::HashMap<String, String>,
+    env_vars: HashMap<String, String>,
 ) -> Result<bool, String> {
-    if is_service_running(&url).await {
-        log::info!("opencode service already running at {}", url);
-        return Ok(false);
-    }
+    let health_url = url.clone();
 
-    let child = spawn_opencode_serve(&binary_path, &env_vars)?;
-    let pid = child.id();
-    log::info!("Started opencode serve, PID: {}", pid);
+    start_opencode_service_inner(
+        state.inner(),
+        &url,
+        &binary_path,
+        &env_vars,
+        &move || {
+            let health_url = health_url.clone();
+            Box::pin(async move { is_service_running(&health_url).await })
+        },
+        &|spawn_binary_path, spawn_env_vars| {
+            spawn_opencode_serve(spawn_binary_path, spawn_env_vars).map(|child| child.id())
+        },
+        START_READINESS_ATTEMPTS,
+        START_READINESS_DELAY,
+    )
+    .await
+}
 
-    state.child_pid.store(pid, Ordering::SeqCst);
-    state.we_started.store(true, Ordering::SeqCst);
-
-    for _ in 0..30 {
-        tokio::time::sleep(Duration::from_millis(500)).await;
-        if is_service_running(&url).await {
-            log::info!("opencode service is ready at {}", url);
-            return Ok(true);
+async fn prepare_close_service_action(
+    state: &ServiceState,
+    stop_service: bool,
+) -> CloseServiceAction {
+    if stop_service {
+        CloseServiceAction::Stop {
+            pid: state.take_owned_pid_for_shutdown().await,
         }
+    } else {
+        CloseServiceAction::KeepRunning
     }
-
-    log::warn!("opencode service started but health check not passing yet");
-    Ok(true)
 }
 
 /// 停止 opencode serve
 #[tauri::command]
 pub async fn stop_opencode_service(state: State<'_, ServiceState>) -> Result<(), String> {
-    let pid = state.child_pid.swap(0, Ordering::SeqCst);
-    state.we_started.store(false, Ordering::SeqCst);
+    let pid = state.take_owned_pid_for_shutdown().await;
 
-    if pid > 0 {
+    if let Some(pid) = pid {
         log::info!("Stopping opencode serve, PID: {}", pid);
         kill_process_by_pid(pid);
     }
@@ -151,16 +258,237 @@ pub async fn confirm_close_app(
     state: State<'_, ServiceState>,
     stop_service: bool,
 ) -> Result<(), String> {
-    if stop_service {
-        let pid = state.child_pid.swap(0, Ordering::SeqCst);
-        if pid > 0 {
-            log::info!("Closing app and stopping opencode serve, PID: {}", pid);
-            kill_process_by_pid(pid);
+    match prepare_close_service_action(state.inner(), stop_service).await {
+        CloseServiceAction::Stop { pid } => {
+            if let Some(pid) = pid {
+                log::info!("Closing app and stopping opencode serve, PID: {}", pid);
+                kill_process_by_pid(pid);
+            }
         }
-        state.we_started.store(false, Ordering::SeqCst);
-    } else {
-        log::info!("Closing app, keeping opencode serve running");
+        CloseServiceAction::KeepRunning => {
+            log::info!("Closing app, keeping opencode serve running");
+        }
     }
 
     window.destroy().map_err(|e| e.to_string())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{
+        is_running_health_status, prepare_close_service_action, start_opencode_service_inner,
+        CloseServiceAction, HealthCheckFuture,
+    };
+    use crate::app::service::ServiceState;
+    use reqwest::StatusCode;
+    use std::{
+        collections::HashMap,
+        sync::{
+            atomic::{AtomicUsize, Ordering},
+            Arc,
+        },
+        time::Duration,
+    };
+    use tokio::sync::Barrier;
+
+    const TEST_URL: &str = "http://127.0.0.1:4096";
+    const TEST_BINARY_PATH: &str = "opencode";
+
+    #[test]
+    fn unauthorized_health_response_counts_as_running() {
+        assert!(is_running_health_status(StatusCode::OK));
+        assert!(is_running_health_status(StatusCode::UNAUTHORIZED));
+        assert!(!is_running_health_status(StatusCode::FORBIDDEN));
+        assert!(!is_running_health_status(StatusCode::INTERNAL_SERVER_ERROR));
+    }
+
+    #[tokio::test]
+    async fn concurrent_start_spawns_once() {
+        let state = Arc::new(ServiceState::default());
+        let barrier = Arc::new(Barrier::new(8));
+        let health_call_count = Arc::new(AtomicUsize::new(0));
+        let spawn_count = Arc::new(AtomicUsize::new(0));
+
+        let handles: Vec<_> = (0..8)
+            .map(|_| {
+                let state = Arc::clone(&state);
+                let barrier = Arc::clone(&barrier);
+                let health_call_count = Arc::clone(&health_call_count);
+                let spawn_count = Arc::clone(&spawn_count);
+
+                tokio::spawn(async move {
+                    let env_vars = HashMap::new();
+                    let health_check = move || -> HealthCheckFuture {
+                        let health_call_count = Arc::clone(&health_call_count);
+                        Box::pin(async move {
+                            let call_index = health_call_count.fetch_add(1, Ordering::SeqCst);
+                            call_index >= 2
+                        })
+                    };
+                    let spawn = move |_binary_path: &str, _env_vars: &HashMap<String, String>| {
+                        let spawn_index = spawn_count.fetch_add(1, Ordering::SeqCst);
+                        Ok(10_000 + spawn_index as u32)
+                    };
+
+                    barrier.wait().await;
+
+                    start_opencode_service_inner(
+                        state.as_ref(),
+                        TEST_URL,
+                        TEST_BINARY_PATH,
+                        &env_vars,
+                        &health_check,
+                        &spawn,
+                        4,
+                        Duration::from_millis(1),
+                    )
+                    .await
+                })
+            })
+            .collect();
+
+        let mut spawned_results = 0;
+
+        for handle in handles {
+            let result = handle.await.expect("task should join").expect("start should succeed");
+            if result {
+                spawned_results += 1;
+            }
+        }
+
+        assert_eq!(spawned_results, 1);
+        assert_eq!(spawn_count.load(Ordering::SeqCst), 1);
+        assert_eq!(state.process.lock().await.child_pid, Some(10_000));
+        assert!(state.we_started.load(Ordering::SeqCst));
+    }
+
+    #[tokio::test]
+    async fn external_running_service_not_owned() {
+        let state = ServiceState::default();
+        let env_vars = HashMap::new();
+        let spawn_count = Arc::new(AtomicUsize::new(0));
+        let health_check = || -> HealthCheckFuture { Box::pin(async { true }) };
+        let spawn_count_for_closure = Arc::clone(&spawn_count);
+        let spawn = move |_binary_path: &str, _env_vars: &HashMap<String, String>| {
+            spawn_count_for_closure.fetch_add(1, Ordering::SeqCst);
+            Ok(20_000)
+        };
+
+        let result = start_opencode_service_inner(
+            &state,
+            TEST_URL,
+            TEST_BINARY_PATH,
+            &env_vars,
+            &health_check,
+            &spawn,
+            2,
+            Duration::from_millis(1),
+        )
+        .await
+        .expect("start should succeed");
+
+        assert!(!result);
+        assert_eq!(spawn_count.load(Ordering::SeqCst), 0);
+        assert_eq!(state.process.lock().await.child_pid, None);
+        assert!(!state.we_started.load(Ordering::SeqCst));
+    }
+
+    #[tokio::test]
+    async fn existing_owned_unhealthy_service_does_not_respawn() {
+        let state = ServiceState::default();
+        state.set_child_pid(30_000).await;
+
+        let env_vars = HashMap::new();
+        let health_call_count = Arc::new(AtomicUsize::new(0));
+        let spawn_count = Arc::new(AtomicUsize::new(0));
+        let health_check = move || -> HealthCheckFuture {
+            let health_call_count = Arc::clone(&health_call_count);
+            Box::pin(async move {
+                let call_index = health_call_count.fetch_add(1, Ordering::SeqCst);
+                call_index >= 2
+            })
+        };
+        let spawn_count_for_closure = Arc::clone(&spawn_count);
+        let spawn = move |_binary_path: &str, _env_vars: &HashMap<String, String>| {
+            spawn_count_for_closure.fetch_add(1, Ordering::SeqCst);
+            Ok(30_001)
+        };
+
+        let result = start_opencode_service_inner(
+            &state,
+            TEST_URL,
+            TEST_BINARY_PATH,
+            &env_vars,
+            &health_check,
+            &spawn,
+            4,
+            Duration::from_millis(1),
+        )
+        .await
+        .expect("start should succeed");
+
+        assert!(!result);
+        assert_eq!(spawn_count.load(Ordering::SeqCst), 0);
+        assert_eq!(state.process.lock().await.child_pid, Some(30_000));
+        assert!(state.we_started.load(Ordering::SeqCst));
+    }
+
+    #[tokio::test]
+    async fn spawn_timeout_preserves_pid_and_returns_true() {
+        let state = ServiceState::default();
+        let env_vars = HashMap::new();
+        let spawn_count = Arc::new(AtomicUsize::new(0));
+        let health_check = || -> HealthCheckFuture { Box::pin(async { false }) };
+        let spawn_count_for_closure = Arc::clone(&spawn_count);
+        let spawn = move |_binary_path: &str, _env_vars: &HashMap<String, String>| {
+            let spawn_index = spawn_count_for_closure.fetch_add(1, Ordering::SeqCst);
+            Ok(40_000 + spawn_index as u32)
+        };
+
+        let result = start_opencode_service_inner(
+            &state,
+            TEST_URL,
+            TEST_BINARY_PATH,
+            &env_vars,
+            &health_check,
+            &spawn,
+            2,
+            Duration::from_millis(1),
+        )
+        .await
+        .expect("start should succeed");
+
+        assert!(result);
+        assert_eq!(spawn_count.load(Ordering::SeqCst), 1);
+        assert_eq!(state.process.lock().await.child_pid, Some(40_000));
+        assert!(state.we_started.load(Ordering::SeqCst));
+    }
+
+    #[tokio::test]
+    async fn stop_takes_owned_pid_once() {
+        let state = ServiceState::default();
+        state.set_child_pid(50_000).await;
+        state.we_started.store(true, Ordering::SeqCst);
+
+        let first_stop_pid = state.take_owned_pid_for_shutdown().await;
+        let second_stop_pid = state.take_owned_pid_for_shutdown().await;
+
+        assert_eq!(first_stop_pid, Some(50_000));
+        assert_eq!(second_stop_pid, None);
+        assert_eq!(state.process.lock().await.child_pid, None);
+        assert!(!state.we_started.load(Ordering::SeqCst));
+    }
+
+    #[tokio::test]
+    async fn confirm_close_keep_service_preserves_pid() {
+        let state = ServiceState::default();
+        state.set_child_pid(60_000).await;
+        state.we_started.store(true, Ordering::SeqCst);
+
+        let action = prepare_close_service_action(&state, false).await;
+
+        assert_eq!(action, CloseServiceAction::KeepRunning);
+        assert_eq!(state.process.lock().await.child_pid, Some(60_000));
+        assert!(state.we_started.load(Ordering::SeqCst));
+    }
 }
