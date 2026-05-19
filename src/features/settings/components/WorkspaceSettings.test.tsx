@@ -71,7 +71,7 @@ describe('WorkspaceSettings', () => {
       sidebarFolderRecents: false,
       sidebarFolderRecentsShowDiff: false,
       sidebarShowChildSessions: true,
-      sidebarSubSessionSortOrder: 'createdAsc',
+      sidebarSubSessionSortOrder: 'activeAsc',
       terminalCopyOnSelect: false,
       terminalRightClickPaste: false,
       wakeLock: false,
@@ -101,15 +101,15 @@ describe('WorkspaceSettings', () => {
   it('reflects the selected sort order and sets descending when clicked', () => {
     render(<WorkspaceSettings />)
 
-    const ascending = screen.getByRole('tab', { name: 'appearance.subSessionSortCreatedAsc' })
-    const descending = screen.getByRole('tab', { name: 'appearance.subSessionSortCreatedDesc' })
+    const ascending = screen.getByRole('tab', { name: 'appearance.subSessionSortActiveAsc' })
+    const descending = screen.getByRole('tab', { name: 'appearance.subSessionSortActiveDesc' })
 
     expect(ascending).toHaveAttribute('aria-selected', 'true')
     expect(descending).toHaveAttribute('aria-selected', 'false')
 
     fireEvent.click(descending)
 
-    expect(setSidebarSubSessionSortOrderMock).toHaveBeenCalledWith('createdDesc')
+    expect(setSidebarSubSessionSortOrderMock).toHaveBeenCalledWith('activeDesc')
   })
 
   it('sets ascending when the ascending option is clicked', () => {
@@ -117,7 +117,7 @@ describe('WorkspaceSettings', () => {
       sidebarFolderRecents: false,
       sidebarFolderRecentsShowDiff: false,
       sidebarShowChildSessions: true,
-      sidebarSubSessionSortOrder: 'createdDesc',
+      sidebarSubSessionSortOrder: 'activeDesc',
       terminalCopyOnSelect: false,
       terminalRightClickPaste: false,
       wakeLock: false,
@@ -125,14 +125,14 @@ describe('WorkspaceSettings', () => {
 
     render(<WorkspaceSettings />)
 
-    const ascending = screen.getByRole('tab', { name: 'appearance.subSessionSortCreatedAsc' })
-    const descending = screen.getByRole('tab', { name: 'appearance.subSessionSortCreatedDesc' })
+    const ascending = screen.getByRole('tab', { name: 'appearance.subSessionSortActiveAsc' })
+    const descending = screen.getByRole('tab', { name: 'appearance.subSessionSortActiveDesc' })
 
     expect(ascending).toHaveAttribute('aria-selected', 'false')
     expect(descending).toHaveAttribute('aria-selected', 'true')
 
     fireEvent.click(ascending)
 
-    expect(setSidebarSubSessionSortOrderMock).toHaveBeenCalledWith('createdAsc')
+    expect(setSidebarSubSessionSortOrderMock).toHaveBeenCalledWith('activeAsc')
   })
 })

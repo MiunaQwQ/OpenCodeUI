@@ -5,8 +5,8 @@ import type { SidebarSubSessionSortOrder } from '../../../store/layoutStore'
 import { Toggle, SegmentedControl, SettingRow, SettingsSection } from './SettingsUI'
 
 const SUB_SESSION_SORT_OPTIONS: { value: SidebarSubSessionSortOrder; labelKey: string }[] = [
-  { value: 'createdAsc', labelKey: 'appearance.subSessionSortCreatedAsc' },
-  { value: 'createdDesc', labelKey: 'appearance.subSessionSortCreatedDesc' },
+  { value: 'activeAsc', labelKey: 'appearance.subSessionSortActiveAsc' },
+  { value: 'activeDesc', labelKey: 'appearance.subSessionSortActiveDesc' },
 ]
 
 export function WorkspaceSettings() {

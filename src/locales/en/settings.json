@@ -202,9 +202,9 @@
     "showChildSessions": "Always Show Child Sessions",
     "showChildSessionsDesc": "Always list child sessions under their parent. When off, only active or selected children are shown.",
     "subSessionSort": "Sub-session sort",
-    "subSessionSortDesc": "Control whether child sessions in Recents are shown oldest-first or newest-first.",
-    "subSessionSortCreatedAsc": "Created time ascending",
-    "subSessionSortCreatedDesc": "Created time descending"
+    "subSessionSortDesc": "Control whether child sessions in Recents are shown by active time ascending or descending, while keeping a stable order for sessions that still fall into the Just now bucket.",
+    "subSessionSortActiveAsc": "Active time ascending",
+    "subSessionSortActiveDesc": "Active time descending"
   },
   "workspace": {
     "layout": "Layout & Reading",
