@@ -76,6 +76,27 @@ interface ProjectItem {
   sectionKind?: 'project' | 'workspace'
 }
 
+let childSessionStoreVersion = 0
+
+function subscribeToChildSessionStoreVersion(onStoreChange: () => void) {
+  return childSessionStore.subscribe(() => {
+    childSessionStoreVersion += 1
+    onStoreChange()
+  })
+}
+
+function getChildSessionStoreVersion() {
+  return childSessionStoreVersion
+}
+
+function useChildSessionStoreVersion() {
+  return useSyncExternalStore(
+    subscribeToChildSessionStoreVersion,
+    getChildSessionStoreVersion,
+    getChildSessionStoreVersion,
+  )
+}
+
 function getSelectionRange(visibleIds: string[], anchorId: string, targetId: string) {
   const startIndex = visibleIds.indexOf(anchorId)
   const endIndex = visibleIds.indexOf(targetId)
@@ -262,11 +283,7 @@ export function SidePanel({
   // Active sessions
   const busySessions = useBusySessions()
   const busyCount = useBusyCount()
-  const childSessionVersion = useSyncExternalStore(
-    childSessionStore.subscribe.bind(childSessionStore),
-    childSessionStore.getVersion,
-    childSessionStore.getVersion,
-  )
+  const childSessionMetadataVersion = useChildSessionStoreVersion()
   // Notification history
   const notifications = useNotifications()
   const unreadNotificationCount = useUnreadNotificationCount()
@@ -302,10 +319,10 @@ export function SidePanel({
 
   const getChildSessionInfo = useCallback(
     (sessionId: string) => {
-      void childSessionVersion
+      childSessionMetadataVersion
       return childSessionStore.getSessionInfo(sessionId)
     },
-    [childSessionVersion],
+    [childSessionMetadataVersion],
   )
 
   const findParentId = useCallback(
