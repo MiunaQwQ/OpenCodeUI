@@ -319,7 +319,7 @@ export function SidePanel({
 
   const getChildSessionInfo = useCallback(
     (sessionId: string) => {
-      childSessionMetadataVersion
+      void childSessionMetadataVersion
       return childSessionStore.getSessionInfo(sessionId)
     },
     [childSessionMetadataVersion],
