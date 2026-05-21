@@ -11,6 +11,7 @@ const {
   setCompletedAtFormatMock,
   setCollapseUserMessagesMock,
   setReasoningDisplayModeMock,
+  setShowModelVariantMock,
 } = vi.hoisted(() => ({
   useTranslationMock: vi.fn(),
   usePathModeMock: vi.fn(),
@@ -20,6 +21,7 @@ const {
   setCompletedAtFormatMock: vi.fn(),
   setCollapseUserMessagesMock: vi.fn(),
   setReasoningDisplayModeMock: vi.fn(),
+  setShowModelVariantMock: vi.fn(),
 }))
 
 vi.mock('react-i18next', () => ({
@@ -48,11 +50,15 @@ vi.mock('../../../store/themeStore', () => ({
     get reasoningDisplayMode() {
       return 'capsule' as const
     },
+    get showModelVariant() {
+      return showModelVariantValue
+    },
     setStepFinishDisplay: setStepFinishDisplayMock,
     setCompletedAtFormat: setCompletedAtFormatMock,
     setModelLabelFormat: setModelLabelFormatMock,
     setCollapseUserMessages: setCollapseUserMessagesMock,
     setReasoningDisplayMode: setReasoningDisplayModeMock,
+    setShowModelVariant: setShowModelVariantMock,
   },
 }))
 
@@ -68,6 +74,8 @@ let stepFinishDisplayValue = {
 }
 
 let modelLabelFormatValue: 'code' | 'name' = 'code'
+
+let showModelVariantValue = false
 
 describe('ChatSettings', () => {
   beforeEach(() => {
@@ -97,12 +105,14 @@ describe('ChatSettings', () => {
     }
 
     modelLabelFormatValue = 'code'
+    showModelVariantValue = false
 
     setModelLabelFormatMock.mockReset()
     setStepFinishDisplayMock.mockReset()
     setCompletedAtFormatMock.mockReset()
     setCollapseUserMessagesMock.mockReset()
     setReasoningDisplayModeMock.mockReset()
+    setShowModelVariantMock.mockReset()
   })
 
   it('hides the model label format control when stepFinishDisplay.model is false', () => {
@@ -162,11 +172,47 @@ describe('ChatSettings', () => {
     const html = section!.innerHTML
     const modelDescIndex = html.indexOf('chat.showModel')
     const modelLabelFormatIndex = html.indexOf('chat.modelLabelFormat')
+    const showModelVariantIndex = html.indexOf('chat.showModelVariant')
     const tokensDescIndex = html.indexOf('chat.showTokenUsage')
     const completedAtFormatIndex = html.indexOf('chat.completedAtFormat')
 
     expect(modelLabelFormatIndex).toBeGreaterThan(modelDescIndex)
-    expect(modelLabelFormatIndex).toBeLessThan(tokensDescIndex)
-    expect(completedAtFormatIndex).toBeGreaterThan(modelLabelFormatIndex)
+    expect(showModelVariantIndex).toBeGreaterThan(modelLabelFormatIndex)
+    expect(showModelVariantIndex).toBeLessThan(tokensDescIndex)
+    expect(completedAtFormatIndex).toBeGreaterThan(showModelVariantIndex)
+  })
+
+  it('hides the show model variant toggle when stepFinishDisplay.model is false', () => {
+    render(<ChatSettings />)
+
+    expect(screen.queryByRole('switch', { name: 'chat.showModelVariant' })).not.toBeInTheDocument()
+  })
+
+  it('shows the show model variant toggle when stepFinishDisplay.model is true', () => {
+    stepFinishDisplayValue = {
+      ...stepFinishDisplayValue,
+      model: true,
+    }
+
+    render(<ChatSettings />)
+
+    expect(screen.getByRole('switch', { name: 'chat.showModelVariant' })).toBeInTheDocument()
+  })
+
+  it('reflects the show model variant state and updates both state and store on interaction', () => {
+    stepFinishDisplayValue = {
+      ...stepFinishDisplayValue,
+      model: true,
+    }
+    showModelVariantValue = false
+
+    render(<ChatSettings />)
+
+    const toggle = screen.getByRole('switch', { name: 'chat.showModelVariant' })
+    expect(toggle).toHaveAttribute('aria-checked', 'false')
+
+    fireEvent.click(toggle)
+
+    expect(setShowModelVariantMock).toHaveBeenCalledWith(true)
   })
 })

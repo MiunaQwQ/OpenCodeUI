@@ -168,6 +168,10 @@ export function useTheme() {
     themeStore.setModelLabelFormat(format)
   }, [])
 
+  const setShowModelVariant = useCallback((enabled: boolean) => {
+    themeStore.setShowModelVariant(enabled)
+  }, [])
+
   // ---- Reasoning Display Mode ----
 
   const setReasoningDisplayMode = useCallback((mode: ReasoningDisplayMode) => {
@@ -262,6 +266,8 @@ export function useTheme() {
     setCompletedAtFormat,
     modelLabelFormat: state.modelLabelFormat,
     setModelLabelFormat,
+    showModelVariant: state.showModelVariant,
+    setShowModelVariant,
 
     // 思考内容显示样式
     reasoningDisplayMode: state.reasoningDisplayMode,

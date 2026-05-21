@@ -103,6 +103,8 @@
     "showAgent": "显示 Agent 名称",
     "model": "Model",
     "showModel": "显示模型信息",
+    "showModelVariant": "Model 变体",
+    "showModelVariantDesc": "显示请求的模型变体",
     "modelLabelFormat": "Model 名称格式",
     "modelLabelFormatDesc": "选择显示模型代码还是模型名称",
     "modelLabelCode": "Model 代码",

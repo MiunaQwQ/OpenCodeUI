@@ -13,6 +13,7 @@ export function ChatSettings() {
   const [stepFinishDisplay, setStepFinishDisplay] = useState(themeStore.stepFinishDisplay)
   const [completedAtFormat, setCompletedAtFormat] = useState(themeStore.completedAtFormat)
   const [modelLabelFormat, setModelLabelFormat] = useState(themeStore.modelLabelFormat)
+  const [showModelVariant, setShowModelVariant] = useState(themeStore.showModelVariant)
   const [reasoningDisplayMode, setReasoningDisplayMode] = useState(themeStore.reasoningDisplayMode)
   const isMobile = useIsMobile()
   void isMobile
@@ -128,6 +129,26 @@ export function ChatSettings() {
                     themeStore.setModelLabelFormat(next)
                   }}
                 />
+                <SettingRow
+                  className="mt-4"
+                  label={t('chat.showModelVariant')}
+                  description={t('chat.showModelVariantDesc')}
+                  onClick={() => {
+                    const next = !showModelVariant
+                    setShowModelVariant(next)
+                    themeStore.setShowModelVariant(next)
+                  }}
+                >
+                  <Toggle
+                    enabled={showModelVariant}
+                    ariaLabel={t('chat.showModelVariant')}
+                    onChange={() => {
+                      const next = !showModelVariant
+                      setShowModelVariant(next)
+                      themeStore.setShowModelVariant(next)
+                    }}
+                  />
+                </SettingRow>
               </div>
             )}
           </Fragment>
