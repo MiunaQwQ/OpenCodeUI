@@ -139,6 +139,11 @@ export function SidebarFooter({ showLabels, connectionState, stats, hasMessages,
     closeTimeoutIdRef.current = closeTimeoutId
   }, [])
 
+  const handleOpenSettings = useCallback(() => {
+    onOpenSettings?.()
+    closeMenu()
+  }, [closeMenu, onOpenSettings])
+
   // 切换菜单
   const toggleMenu = useCallback(() => {
     if (isOpen) closeMenu()
@@ -319,10 +324,7 @@ export function SidebarFooter({ showLabels, connectionState, stats, hasMessages,
 
             <button
               type="button"
-              onClick={() => {
-                closeMenu()
-                onOpenSettings?.()
-              }}
+              onClick={handleOpenSettings}
               className="w-full flex items-center gap-2 px-2 py-1.5 rounded-md text-[length:var(--fs-sm)] text-text-300 hover:text-text-100 hover:bg-bg-200/50 transition-colors text-left"
             >
               <CogIcon size={14} />
