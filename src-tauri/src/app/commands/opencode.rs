@@ -83,6 +83,12 @@ fn spawn_opencode_serve(
         cmd.creation_flags(CREATE_NO_WINDOW);
     }
 
+    #[cfg(unix)]
+    {
+        use std::os::unix::process::CommandExt;
+        cmd.process_group(0);
+    }
+
     cmd.spawn().map_err(|e| {
         format!(
             "Failed to start '{}': {}. Check that the path is correct.",
@@ -206,11 +212,63 @@ pub fn kill_process_by_pid(pid: u32) {
 
     #[cfg(not(target_os = "windows"))]
     {
-        let _ = Command::new("kill")
-            .arg(pid.to_string())
-            .stdout(Stdio::null())
-            .stderr(Stdio::null())
-            .spawn();
+        let signal_pid = match unix_signal_pid(pid) {
+            Ok(signal_pid) => signal_pid,
+            Err(error) => {
+                log::warn!("Refusing to signal PID {}: {}", pid, error);
+                return;
+            }
+        };
+
+        let process_group_pid = signal_pid
+            .checked_neg()
+            .expect("validated signal pid should always be positive");
+
+        if let Err(group_error) = send_sigterm(process_group_pid) {
+            if group_error.raw_os_error() == Some(libc::ESRCH) {
+                log::info!(
+                    "Process group {} not found for PID {}, falling back to direct SIGTERM",
+                    process_group_pid,
+                    pid
+                );
+
+                if let Err(single_error) = send_sigterm(signal_pid) {
+                    log::warn!(
+                        "Failed to SIGTERM legacy PID {} after process-group ESRCH fallback: {}",
+                        pid,
+                        single_error
+                    );
+                }
+
+                return;
+            }
+
+            log::warn!(
+                "Failed to SIGTERM process group {} for PID {}: {}",
+                process_group_pid,
+                pid,
+                group_error
+            );
+        }
+    }
+}
+
+#[cfg(not(target_os = "windows"))]
+fn unix_signal_pid(pid: u32) -> Result<libc::pid_t, &'static str> {
+    if pid == 0 {
+        return Err("PID 0 is reserved and would signal the current process group");
+    }
+
+    libc::pid_t::try_from(pid).map_err(|_| "PID does not fit into libc::pid_t")
+}
+
+#[cfg(not(target_os = "windows"))]
+fn send_sigterm(target_pid: libc::pid_t) -> std::io::Result<()> {
+    let result = unsafe { libc::kill(target_pid, libc::SIGTERM) };
+    if result == 0 {
+        Ok(())
+    } else {
+        Err(std::io::Error::last_os_error())
     }
 }
 
@@ -322,6 +380,12 @@ mod tests {
     };
     use tokio::sync::Barrier;
 
+    #[cfg(unix)]
+    use super::{kill_process_by_pid, unix_signal_pid};
+
+    #[cfg(unix)]
+    use std::{os::unix::process::CommandExt, process::{Child, Command, Stdio}, thread};
+
     const TEST_URL: &str = "http://127.0.0.1:4096";
     const TEST_BINARY_PATH: &str = "opencode";
 
@@ -337,12 +401,155 @@ mod tests {
         ))
     }
 
+    #[cfg(unix)]
+    fn unique_pid_path(test_name: &str) -> PathBuf {
+        let timestamp = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("clock should be after epoch")
+            .as_nanos();
+
+        std::env::temp_dir().join(format!(
+            "opencodeui-opencode-tests-{test_name}-{}-{timestamp}.pid",
+            std::process::id()
+        ))
+    }
+
+    #[cfg(unix)]
+    fn spawn_waiting_shell(pid_file_path: &PathBuf, create_process_group: bool) -> Child {
+        let mut command = Command::new("sh");
+        command
+            .args([
+                "-c",
+                "sleep 600 & child=$!; printf \"%s\" \"$child\" > \"$1\"; wait \"$child\"",
+                "sh",
+                pid_file_path
+                    .to_str()
+                    .expect("temporary pid file path should be valid UTF-8"),
+            ])
+            .stdout(Stdio::null())
+            .stderr(Stdio::null());
+
+        if create_process_group {
+            command.process_group(0);
+        }
+
+        command.spawn().expect("shell process should spawn")
+    }
+
+    #[cfg(unix)]
+    fn read_pid_with_retry(pid_file_path: &PathBuf) -> u32 {
+        for _ in 0..100 {
+            if let Ok(contents) = fs::read_to_string(pid_file_path) {
+                if let Ok(pid) = contents.trim().parse::<u32>() {
+                    return pid;
+                }
+            }
+
+            thread::sleep(Duration::from_millis(20));
+        }
+
+        panic!(
+            "child pid file '{}' was not populated in time",
+            pid_file_path.display()
+        );
+    }
+
+    #[cfg(unix)]
+    fn pid_exists(pid: u32) -> bool {
+        let Ok(signal_pid) = unix_signal_pid(pid) else {
+            return false;
+        };
+
+        let result = unsafe { libc::kill(signal_pid, 0) };
+        if result == 0 {
+            true
+        } else {
+            matches!(std::io::Error::last_os_error().raw_os_error(), Some(libc::EPERM))
+        }
+    }
+
+    #[cfg(unix)]
+    fn wait_for_process_exit(process: &mut Child) {
+        for _ in 0..200 {
+            if process
+                .try_wait()
+                .expect("waiting for process status should succeed")
+                .is_some()
+            {
+                return;
+            }
+
+            thread::sleep(Duration::from_millis(20));
+        }
+
+        panic!("process {} did not exit before timeout", process.id());
+    }
+
+    #[cfg(unix)]
+    fn wait_for_pid_gone(pid: u32) {
+        for _ in 0..200 {
+            if !pid_exists(pid) {
+                return;
+            }
+
+            thread::sleep(Duration::from_millis(20));
+        }
+
+        panic!("pid {} still appears alive after timeout", pid);
+    }
+
     #[test]
     fn unauthorized_health_response_counts_as_running() {
         assert!(is_running_health_status(StatusCode::OK));
         assert!(is_running_health_status(StatusCode::UNAUTHORIZED));
         assert!(!is_running_health_status(StatusCode::FORBIDDEN));
         assert!(!is_running_health_status(StatusCode::INTERNAL_SERVER_ERROR));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn unix_process_group_shutdown_terminates_child_process() {
+        let pid_file_path = unique_pid_path("unix-process-group-shutdown");
+        let mut parent = spawn_waiting_shell(&pid_file_path, true);
+        let parent_pid = parent.id();
+        let child_pid = read_pid_with_retry(&pid_file_path);
+
+        assert!(pid_exists(parent_pid));
+        assert!(pid_exists(child_pid));
+
+        kill_process_by_pid(parent_pid);
+
+        wait_for_process_exit(&mut parent);
+        wait_for_pid_gone(parent_pid);
+        wait_for_pid_gone(child_pid);
+
+        let _ = fs::remove_file(pid_file_path);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn legacy_single_pid_kill_fallback_terminates_process_after_esrch() {
+        let mut process = Command::new("sleep")
+            .arg("600")
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .spawn()
+            .expect("sleep process should spawn");
+        let pid = process.id();
+
+        assert!(pid_exists(pid));
+
+        kill_process_by_pid(pid);
+
+        wait_for_process_exit(&mut process);
+        wait_for_pid_gone(pid);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn rejects_zero_pid_before_signal() {
+        assert_eq!(unix_signal_pid(0), Err("PID 0 is reserved and would signal the current process group"));
+        assert_eq!(unix_signal_pid(u32::MAX), Err("PID does not fit into libc::pid_t"));
     }
 
     #[tokio::test]
