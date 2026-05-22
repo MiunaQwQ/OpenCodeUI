@@ -5,6 +5,7 @@
 
 use crate::app::service::ServiceState;
 use reqwest::StatusCode;
+use serde::Serialize;
 use std::{
     collections::HashMap,
     future::Future,
@@ -21,6 +22,13 @@ type SpawnFn = dyn Fn(&str, &HashMap<String, String>) -> Result<u32, String> + S
 
 const START_READINESS_ATTEMPTS: usize = 30;
 const START_READINESS_DELAY: Duration = Duration::from_millis(500);
+
+#[derive(Debug, Clone, Copy, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct StartOpencodeServiceResult {
+    pub spawned_now: bool,
+    pub app_owned: bool,
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum CloseServiceAction {
@@ -107,7 +115,7 @@ async fn start_opencode_service_inner(
     spawn: &SpawnFn,
     readiness_attempts: usize,
     readiness_delay: Duration,
-) -> Result<bool, String> {
+) -> Result<StartOpencodeServiceResult, String> {
     let mut process = state.process.lock().await;
     let owned_pid = process.child_pid;
     let healthy = health_check().await;
@@ -125,7 +133,10 @@ async fn start_opencode_service_inner(
             state.we_started.store(false, Ordering::SeqCst);
         }
 
-        return Ok(false);
+        return Ok(StartOpencodeServiceResult {
+            spawned_now: false,
+            app_owned: owned_pid.is_some(),
+        });
     }
 
     if let Some(pid) = owned_pid {
@@ -144,12 +155,27 @@ async fn start_opencode_service_inner(
             );
         }
 
-        return Ok(false);
+        return Ok(StartOpencodeServiceResult {
+            spawned_now: false,
+            app_owned: true,
+        });
     }
 
     let pid = spawn(binary_path, env_vars)?;
-    process.child_pid = Some(pid);
-    state.we_started.store(true, Ordering::SeqCst);
+
+    if let Err(error) = state.register_spawned_pid_locked(&mut process, pid) {
+        drop(process);
+        log::warn!(
+            "Failed to persist app-owned PID {} after spawn, stopping backend again: {}",
+            pid,
+            error
+        );
+        kill_process_by_pid(pid);
+        return Err(error);
+    }
+
+    drop(process);
+
     log::info!("Started opencode serve, PID: {}", pid);
 
     if wait_for_service(health_check, readiness_attempts, readiness_delay).await {
@@ -158,7 +184,10 @@ async fn start_opencode_service_inner(
         log::warn!("opencode service started but health check not passing yet");
     }
 
-    Ok(true)
+    Ok(StartOpencodeServiceResult {
+        spawned_now: true,
+        app_owned: true,
+    })
 }
 
 /// 跨平台杀进程
@@ -198,7 +227,7 @@ pub async fn start_opencode_service(
     url: String,
     binary_path: String,
     env_vars: HashMap<String, String>,
-) -> Result<bool, String> {
+) -> Result<StartOpencodeServiceResult, String> {
     let health_url = url.clone();
 
     start_opencode_service_inner(
@@ -277,22 +306,36 @@ pub async fn confirm_close_app(
 mod tests {
     use super::{
         is_running_health_status, prepare_close_service_action, start_opencode_service_inner,
-        CloseServiceAction, HealthCheckFuture,
+        CloseServiceAction, HealthCheckFuture, StartOpencodeServiceResult,
     };
     use crate::app::service::ServiceState;
     use reqwest::StatusCode;
     use std::{
         collections::HashMap,
+        fs,
+        path::PathBuf,
         sync::{
             atomic::{AtomicUsize, Ordering},
             Arc,
         },
-        time::Duration,
+        time::{Duration, SystemTime, UNIX_EPOCH},
     };
     use tokio::sync::Barrier;
 
     const TEST_URL: &str = "http://127.0.0.1:4096";
     const TEST_BINARY_PATH: &str = "opencode";
+
+    fn unique_marker_path(test_name: &str) -> PathBuf {
+        let timestamp = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("clock should be after epoch")
+            .as_nanos();
+
+        std::env::temp_dir().join(format!(
+            "opencodeui-opencode-tests-{test_name}-{}-{timestamp}.json",
+            std::process::id()
+        ))
+    }
 
     #[test]
     fn unauthorized_health_response_counts_as_running() {
@@ -351,9 +394,11 @@ mod tests {
 
         for handle in handles {
             let result = handle.await.expect("task should join").expect("start should succeed");
-            if result {
+            if result.spawned_now {
                 spawned_results += 1;
             }
+
+            assert!(result.app_owned);
         }
 
         assert_eq!(spawned_results, 1);
@@ -387,7 +432,13 @@ mod tests {
         .await
         .expect("start should succeed");
 
-        assert!(!result);
+        assert_eq!(
+            result,
+            StartOpencodeServiceResult {
+                spawned_now: false,
+                app_owned: false,
+            }
+        );
         assert_eq!(spawn_count.load(Ordering::SeqCst), 0);
         assert_eq!(state.process.lock().await.child_pid, None);
         assert!(!state.we_started.load(Ordering::SeqCst));
@@ -427,7 +478,13 @@ mod tests {
         .await
         .expect("start should succeed");
 
-        assert!(!result);
+        assert_eq!(
+            result,
+            StartOpencodeServiceResult {
+                spawned_now: false,
+                app_owned: true,
+            }
+        );
         assert_eq!(spawn_count.load(Ordering::SeqCst), 0);
         assert_eq!(state.process.lock().await.child_pid, Some(30_000));
         assert!(state.we_started.load(Ordering::SeqCst));
@@ -458,10 +515,119 @@ mod tests {
         .await
         .expect("start should succeed");
 
-        assert!(result);
+        assert_eq!(
+            result,
+            StartOpencodeServiceResult {
+                spawned_now: true,
+                app_owned: true,
+            }
+        );
         assert_eq!(spawn_count.load(Ordering::SeqCst), 1);
         assert_eq!(state.process.lock().await.child_pid, Some(40_000));
         assert!(state.we_started.load(Ordering::SeqCst));
+    }
+
+    #[tokio::test]
+    async fn healthy_owned_service_reports_app_owned_without_respawn() {
+        let state = ServiceState::default();
+        state.set_child_pid(45_000).await;
+        let env_vars = HashMap::new();
+        let spawn_count = Arc::new(AtomicUsize::new(0));
+        let health_check = || -> HealthCheckFuture { Box::pin(async { true }) };
+        let spawn_count_for_closure = Arc::clone(&spawn_count);
+        let spawn = move |_binary_path: &str, _env_vars: &HashMap<String, String>| {
+            spawn_count_for_closure.fetch_add(1, Ordering::SeqCst);
+            Ok(45_001)
+        };
+
+        let result = start_opencode_service_inner(
+            &state,
+            TEST_URL,
+            TEST_BINARY_PATH,
+            &env_vars,
+            &health_check,
+            &spawn,
+            2,
+            Duration::from_millis(1),
+        )
+        .await
+        .expect("start should succeed");
+
+        assert_eq!(
+            result,
+            StartOpencodeServiceResult {
+                spawned_now: false,
+                app_owned: true,
+            }
+        );
+        assert_eq!(spawn_count.load(Ordering::SeqCst), 0);
+        assert_eq!(state.process.lock().await.child_pid, Some(45_000));
+        assert!(state.we_started.load(Ordering::SeqCst));
+    }
+
+    #[tokio::test]
+    async fn reopened_keep_running_backend_remains_app_owned_for_final_close() {
+        let marker_path = unique_marker_path("reopen-keep-running");
+        let owned_pid = std::process::id();
+        let initial_state = ServiceState::new(marker_path.clone());
+
+        initial_state
+            .register_spawned_pid(owned_pid)
+            .await
+            .expect("initial ownership marker should persist");
+
+        let keep_running_action = prepare_close_service_action(&initial_state, false).await;
+        assert_eq!(keep_running_action, CloseServiceAction::KeepRunning);
+        assert_eq!(initial_state.process.lock().await.child_pid, Some(owned_pid));
+        assert!(initial_state.we_started.load(Ordering::SeqCst));
+
+        let reopened_state = ServiceState::new(marker_path.clone());
+        assert_eq!(reopened_state.process.lock().await.child_pid, Some(owned_pid));
+        assert!(reopened_state.we_started.load(Ordering::SeqCst));
+
+        let env_vars = HashMap::new();
+        let spawn_count = Arc::new(AtomicUsize::new(0));
+        let health_check = || -> HealthCheckFuture { Box::pin(async { true }) };
+        let spawn_count_for_closure = Arc::clone(&spawn_count);
+        let spawn = move |_binary_path: &str, _env_vars: &HashMap<String, String>| {
+            spawn_count_for_closure.fetch_add(1, Ordering::SeqCst);
+            Ok(owned_pid + 1)
+        };
+
+        let result = start_opencode_service_inner(
+            &reopened_state,
+            TEST_URL,
+            TEST_BINARY_PATH,
+            &env_vars,
+            &health_check,
+            &spawn,
+            2,
+            Duration::from_millis(1),
+        )
+        .await
+        .expect("reopened start should succeed");
+
+        assert_eq!(
+            result,
+            StartOpencodeServiceResult {
+                spawned_now: false,
+                app_owned: true,
+            }
+        );
+        assert_eq!(spawn_count.load(Ordering::SeqCst), 0);
+        assert!(reopened_state.we_started.load(Ordering::SeqCst));
+
+        let final_close_action = prepare_close_service_action(&reopened_state, true).await;
+        assert_eq!(
+            final_close_action,
+            CloseServiceAction::Stop {
+                pid: Some(owned_pid),
+            }
+        );
+        assert!(!reopened_state.we_started.load(Ordering::SeqCst));
+        assert!(!marker_path.exists());
+
+        let _ = fs::remove_file(marker_path);
     }
 
     #[tokio::test]
